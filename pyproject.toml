@@ -1,0 +1,29 @@
+[project]
+name = "freelance-parser"
+version = "0.1.0"
+description = "Парсер фриланс-бирж → анализ Claude → GitHub Issues в Backlog проекта"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=1.11.0",
+    "beautifulsoup4>=4.15.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.13.5",
+    "pygithub>=2.10.0",
+    "python-dotenv>=1.2.4",
+    "tzdata>=2026.5",
+]
+
+# плоские модули в корне, а не пакет: ставим только зависимости
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

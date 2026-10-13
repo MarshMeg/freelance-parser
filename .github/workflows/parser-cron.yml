@@ -1,0 +1,98 @@
+name: Freelance parser
+
+on:
+  schedule:
+    - cron: "7 * * * *"   # каждый час (минута 7, чтобы не попадать в пик нагрузки)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Только парсинг, без LLM и Issues"
+        type: boolean
+        default: false
+      reset_cache:
+        description: "Не подтягивать кэш виденных заказов (все заказы из ленты анализируются заново)"
+        type: boolean
+        default: false
+      analyzer_model:
+        description: "Модель Claude для анализа (пусто — по умолчанию)"
+        type: string
+        default: ""
+
+# запускается только по расписанию и вручную (нужен доступ на запись), не из PR: код форков
+# сюда не попадает; в форках расписание по умолчанию выключено, а секреты не наследуются
+permissions:
+  contents: read
+
+concurrency:
+  group: freelance-parser
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # кэш виденных заказов; ключ уникален на запуск, restore-keys подтягивает последний.
+      # restore/save раздельно: save с always() сохраняет кэш, даже если запуск упал или прерван
+      # reset_cache: запуск стартует с пустым кэшем и сохраняет новый — следующие запуски подтянут уже его
+      - uses: actions/cache/restore@v4
+        if: ${{ !inputs.reset_cache }}
+        with:
+          path: .cache
+          key: seen-jobs-${{ github.run_id }}
+          restore-keys: seen-jobs-
+
+      - name: Run image
+        timeout-minutes: 50   # с запасом до таймаута job, чтобы успел сохраниться кэш
+        env:
+          # PAT со scope repo + project (встроенный GITHUB_TOKEN не видит user-проекты)
+          GH_PAT: ${{ secrets.GH_PAT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # где создавать Issues: переменная ISSUES_REPO (owner/repo), иначе этот же репозиторий.
+          # В публичном репозитории Issues с текстами заказов видны всем — укажите отдельный приватный
+          ISSUES_REPO: ${{ vars.ISSUES_REPO || github.repository }}
+          # имена переменных и секретов не могут начинаться с GITHUB_, поэтому без префикса;
+          # пусто — значения по умолчанию из config.py
+          GITHUB_PROJECT_ID: ${{ vars.PROJECT_ID }}
+          GITHUB_PROJECT_OWNER: ${{ vars.PROJECT_OWNER }}
+          DEVELOPER_STACK: ${{ vars.DEVELOPER_STACK }}
+          TIMEZONE: ${{ vars.TIMEZONE }}
+          # логи Actions публичного репозитория видны всем: по умолчанию в них только ID заказов
+          LOG_JOB_TITLES: ${{ vars.LOG_JOB_TITLES || 'false' }}
+          # ручной запуск > переменная репозитория > пусто (значение по умолчанию из config.py)
+          ANALYZER_MODEL: ${{ inputs.analyzer_model || vars.ANALYZER_MODEL }}
+          # активные парсеры через запятую; пусто — значение по умолчанию из config.py
+          ENABLED_PARSERS: ${{ vars.ENABLED_PARSERS }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: |
+          mkdir -p .cache
+          docker run --rm \
+            -e GITHUB_TOKEN="$GH_PAT" \
+            -e ANTHROPIC_API_KEY \
+            -e OPENROUTER_API_KEY \
+            -e GITHUB_REPO="$ISSUES_REPO" \
+            -e GITHUB_PROJECT_ID \
+            -e GITHUB_PROJECT_OWNER \
+            -e DEVELOPER_STACK \
+            -e TIMEZONE \
+            -e LOG_JOB_TITLES \
+            -e ANALYZER_MODEL \
+            -e ENABLED_PARSERS \
+            -v "$PWD/.cache:/app/.cache" \
+            "ghcr.io/${GITHUB_REPOSITORY,,}:latest" $DRY_RUN
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .cache
+          key: seen-jobs-${{ github.run_id }}
